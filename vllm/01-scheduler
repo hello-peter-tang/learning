@@ -1,0 +1,23 @@
+scheduler主要处理一大堆请求的input和output。
+
+# vLLM请求处理过程：
+
+api层收到请求，通过render把prompt进行tokenizer。然后通过inputProcessor把生成request。放到request队列里面。
+
+scheduler循环不断去扫request队列。里面有两个队列，running和waiting
+
+对running的队列处理流程是这样的：
+1. 计算需要的token个数：input token + output token + spec token + place holder token
+2. 已经计算了多少 token。这不是在gpu返回才更新的，在schedule返回前就乐观地填写了。所以如果gpu失败了，这个值还要回退。num_computed_tokens
+3. 这个request这一轮调度需要的token = 需要的token个数 - 已经分配了多少个token。num_tokens_with_spec + placeholders - num_computed_tokens
+4. 需要的token要和token_budget，这个request还能生成的token个数取min。就是这一轮请求的token数量
+5. 向block_manager申请block。block_manager是all or nothing的。如果block不够，就一个block都不返回。
+6. prefill阶段需要考虑缓存命中， chunked prefill。decode阶段等于1，如果有投机解码就需要多K个。place holder是异步调度需要的。我没看懂异步调度是啥意思。
+7. 如果要不到block，要按照抢占策略去抢占。如果是FCFS就会从running队列最后一个request哪里去抢占。
+8. 遍历running的每个request，直到token_budget用完，还有一些其他的条件限制，就continue退出。这里有很多细节，可以之后继续学习。
+
+如果没有发生抢占，就继续处理waiting队列。对waiting队列有以下两个区别：
+1. promopt去找一下有没有kv-cache。如果找到了，就可以少要一点token。
+2. 如果要不到block。就直接退出了，因为后面的request还是等不到block。
+
+# vLLM获取输出token的过程
